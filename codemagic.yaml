@@ -1,0 +1,59 @@
+# Codemagic: build an UNSIGNED, English-only DSHM .ipa for sideloading (e.g. rustsign).
+#
+# - No Apple developer account needed; sign the resulting .ipa yourself.
+# - Relay address is baked in as the public relay (www.storyworld.site).
+# - Every non-English localization is stripped from the app bundle, so the UI is
+#   English regardless of the phone's language.
+# - Push notifications will not work after re-signing with a free Apple ID
+#   (no aps-environment entitlement); everything else is unaffected.
+
+workflows:
+  dshm-unsigned-ipa:
+    name: DSHM unsigned IPA (English)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      xcode: latest
+      vars:
+        RELAY_URL: https://www.storyworld.site/dsh-link
+    scripts:
+      - name: Build unsigned app (device, Release)
+        script: |
+          set -euo pipefail
+          cd ios/DSHMobile
+          xcodebuild -project DSHMobile.xcodeproj \
+            -scheme DSHMobile \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$CM_BUILD_DIR/dd" \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            DSH_RELAY_URL="$RELAY_URL" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            DEVELOPMENT_TEAM="" \
+            build | tail -40
+
+      - name: Force English and package .ipa
+        script: |
+          set -euo pipefail
+          APP="$CM_BUILD_DIR/dd/Build/Products/Release-iphoneos/DSHMobile.app"
+          test -d "$APP" || { echo "App not found at $APP"; exit 1; }
+
+          # Keep only English (and Base) localizations everywhere inside the bundle.
+          find "$APP" -type d -name "*.lproj" ! -name "en.lproj" ! -name "Base.lproj" -prune -exec rm -rf {} +
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDevelopmentRegion en" "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c "Delete :CFBundleLocalizations" "$APP/Info.plist" 2>/dev/null || true
+
+          echo "Relay baked in: $(/usr/libexec/PlistBuddy -c 'Print :DSHRelayURL' "$APP/Info.plist")"
+          echo "Localizations left:"; find "$APP" -maxdepth 1 -name "*.lproj"
+
+          cd "$CM_BUILD_DIR"
+          rm -rf Payload && mkdir Payload
+          cp -R "$APP" Payload/
+          zip -qry DSHM-English-unsigned.ipa Payload
+          ls -lh DSHM-English-unsigned.ipa
+    artifacts:
+      - DSHM-English-unsigned.ipa
